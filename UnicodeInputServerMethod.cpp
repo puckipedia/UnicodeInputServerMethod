@@ -159,7 +159,7 @@ UnicodeInputServerMethod::HandleKey(BMessage *msg, BList *outList)
 	uint32 mod = (uint32) msg->GetInt32("modifiers", -1);
 	SERIAL_PRINT(("Modifiers: 0x%08X\n", mod));
 
-	if ((mod & 0xFF) > 1) { // anything but shift key
+	if (mod & (B_COMMAND_KEY | B_CONTROL_KEY)) { // command / control key
 		StopTransaction(false);
 		return B_DISPATCH_MESSAGE;
 	}
