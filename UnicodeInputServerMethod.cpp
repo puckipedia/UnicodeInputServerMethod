@@ -1,6 +1,7 @@
-#define DEBUG 0
+#define DEBUG 1
 
 #include <Application.h>
+#include <Beep.h>
 #include <Debug.h>
 #include <Handler.h>
 #include <Input.h>
@@ -13,17 +14,19 @@
 #include <add-ons/input_server/InputServerMethod.h>
 
 extern "C" BInputServerMethod *instantiate_input_method();
+extern "C" BInputServerMethod *instantiate_input_filter();
+
 class UnicodeInputServerMethod : public BInputServerMethod, public BHandler
 {
 public:
 					 UnicodeInputServerMethod();
 					~UnicodeInputServerMethod();
 	filter_result	 Filter(BMessage *message, BList *outList);
-	void			 MessageReceived(BMessage *msg);
 	status_t		 MethodActivated(bool active);
 private:
 	bool			mEnabled;
 	bool			mInTransaction;
+	bool			mUnicodeShortcut;
 	BString			mHexData;
 
 	void			StartTransaction();
@@ -43,28 +46,26 @@ BInputServerMethod *instantiate_input_method()
 }
 
 
+BInputServerMethod *instantiate_input_filter()
+{
+	SET_DEBUG_ENABLED(1);
+	return new UnicodeInputServerMethod();
+}
+
+
 UnicodeInputServerMethod::UnicodeInputServerMethod()
 	:
 	BInputServerMethod("Unicode", NULL),
 	BHandler(),
 	mEnabled(false),
-	mInTransaction(false)
+	mInTransaction(false),
+	mUnicodeShortcut(false)
 {
-	if (be_app) {
-		be_app->Lock();
-		be_app->AddHandler(this);
-		be_app->Unlock();
-	}
 }
 
 
 UnicodeInputServerMethod::~UnicodeInputServerMethod()
 {
-	if (be_app) {
-		be_app->Lock();
-		be_app->RemoveHandler(this);
-		be_app->Unlock();
-	}
 }
 
 
@@ -77,6 +78,12 @@ UnicodeInputServerMethod::StartTransaction()
 	BMessage *msg = new BMessage(B_INPUT_METHOD_EVENT);
 	msg->AddInt32("be:opcode", B_INPUT_METHOD_STARTED);
 	msg->AddMessenger("be:reply_to", BMessenger(this));
+	EnqueueMessage(msg); 
+
+	msg = new BMessage(B_INPUT_METHOD_EVENT);
+	msg->AddInt32("be:opcode", B_INPUT_METHOD_CHANGED);
+	msg->AddString("be:string", "U+");
+	msg->AddBool("be:confirmed", false);
 	EnqueueMessage(msg);
 
 	mHexData = "";
@@ -108,9 +115,12 @@ UnicodeInputServerMethod::AddCharacter(char c)
 
 	SERIAL_PRINT(("Input method data changed: '%s'\n", mHexData.String()));
 
+	BString resultStr = "U+";
+	resultStr.Append(mHexData);
+
 	BMessage *msg = new BMessage(B_INPUT_METHOD_EVENT);
 	msg->AddInt32("be:opcode", B_INPUT_METHOD_CHANGED);
-	msg->AddString("be:string", mHexData);
+	msg->AddString("be:string", resultStr);
 	msg->AddBool("be:confirmed", false);
 	EnqueueMessage(msg);
 }
@@ -132,9 +142,10 @@ UnicodeInputServerMethod::StopTransaction(bool send)
 		
 		if (!BUnicodeChar::IsDefined(chr)) {
 			SERIAL_PRINT(("Character 0x%08X is invalid according to BUnicodeChar\n", chr));
+			beep();
 			return; // ignore invalid character
 		}
-		
+
 		char buffer[5] = {0};
 		char *buffer_ptr = buffer;
 		
@@ -151,16 +162,18 @@ UnicodeInputServerMethod::StopTransaction(bool send)
 	msg->AddInt32("be:opcode", B_INPUT_METHOD_STOPPED);
 	EnqueueMessage(msg);
 	mInTransaction = false;
+
+	if (mUnicodeShortcut)
+		mUnicodeShortcut = false;
 }
 
 filter_result
 UnicodeInputServerMethod::HandleKey(BMessage *msg, BList *outList)
-{	
+{
 	uint32 mod = (uint32) msg->GetInt32("modifiers", -1);
 	SERIAL_PRINT(("Modifiers: 0x%08X\n", mod));
 
 	if (mod & (B_COMMAND_KEY | B_CONTROL_KEY)) { // command / control key
-		StopTransaction(false);
 		return B_DISPATCH_MESSAGE;
 	}
 
@@ -176,6 +189,10 @@ UnicodeInputServerMethod::HandleKey(BMessage *msg, BList *outList)
 		if (msg->FindData("byte", B_UINT8_TYPE, (const void **)&byte, &bytes) != B_OK)
 			return B_DISPATCH_MESSAGE;
 		c = *byte;
+	}
+
+	if (c == B_ESCAPE) {
+		StopTransaction(false);
 	}
 
 	if (msg->what == B_KEY_DOWN) {
@@ -197,8 +214,21 @@ UnicodeInputServerMethod::HandleKey(BMessage *msg, BList *outList)
 filter_result
 UnicodeInputServerMethod::Filter(BMessage *msg, BList *outList)
 {
-	if (!mEnabled)
+	if (!mEnabled && !mUnicodeShortcut) {
+		if (msg->what == B_KEY_DOWN) {
+			uint32 mod = (uint32) msg->GetInt32("modifiers", -1);
+			SERIAL_PRINT(("Unmapped modifiers: 0x%08X\n", mod));
+			if ((mod & (B_COMMAND_KEY | B_SHIFT_KEY | B_CONTROL_KEY)) == (B_COMMAND_KEY | B_SHIFT_KEY)) {
+				if (msg->GetInt32("raw_char", -1) == 'u') {
+					mUnicodeShortcut = true;
+					SERIAL_PRINT(("Got command + shift + u command!\n"));
+					StartTransaction();
+					return B_SKIP_MESSAGE;
+				}
+			}
+		}
 		return B_DISPATCH_MESSAGE;
+	}
 
 	switch(msg->what) {
 	case B_KEY_DOWN:
@@ -216,7 +246,6 @@ UnicodeInputServerMethod::MethodActivated(bool active)
 	mEnabled = active;
 	mHexData = "";
 
-	SERIAL_TRACE();
 	SERIAL_PRINT(("Method activated: %s\n", active ? "true" : "false"));
 
 	if (!active) {
@@ -228,11 +257,4 @@ UnicodeInputServerMethod::MethodActivated(bool active)
 
 	mInTransaction = false;
 	return B_OK;
-}
-
-
-void
-UnicodeInputServerMethod::MessageReceived(BMessage *msg)
-{
-	BHandler::MessageReceived(msg);
 }
