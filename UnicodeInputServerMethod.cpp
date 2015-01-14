@@ -132,12 +132,12 @@ UnicodeInputServerMethod::StopTransaction(bool send)
 	if (!mInTransaction)
 		return;
 
-	SERIAL_PRINT(("Stopping transaction... \n"));
+	SERIAL_PRINT(("Stopping transaction... \nHexData = '%s'\n", mHexData));
 
 	BMessage *msg;
 
-	if (send) {
-		uint32 chr;
+	if (send && mHexData.Length() > 0) {
+		uint32 chr = 0;
 		sscanf(mHexData, "%" B_SCNx32, &chr);
 		
 		if (!BUnicodeChar::IsDefined(chr)) {
@@ -154,6 +154,12 @@ UnicodeInputServerMethod::StopTransaction(bool send)
 		msg = new BMessage(B_INPUT_METHOD_EVENT);
 		msg->AddInt32("be:opcode", B_INPUT_METHOD_CHANGED);
 		msg->AddString("be:string", buffer);
+		msg->AddBool("be:confirmed", true);
+		EnqueueMessage(msg);
+	} else {
+		msg = new BMessage(B_INPUT_METHOD_EVENT);
+		msg->AddInt32("be:opcode", B_INPUT_METHOD_CHANGED);
+		msg->AddString("be:string", "");
 		msg->AddBool("be:confirmed", true);
 		EnqueueMessage(msg);
 	}
